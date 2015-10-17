@@ -1,41 +1,43 @@
 from io import BytesIO
-import httplib
+
+
+try:
+    import httplib
+except ImportError:
+    import http.client as httplib
+
+
 from contextlib import contextmanager
-import tempfile
 
 orig_connection = httplib.HTTPConnection
-
 
 # ============================================================================
 class RecordingStream(object):
     def __init__(self, fp, recorder):
         self.fp = fp
         self.recorder = recorder
-        self.out = recorder.create_buffer()
-
         if hasattr(self.fp, 'unread'):
             self.unread = self.fp.unread
 
         if hasattr(self.fp, 'tell'):
             self.tell = self.fp.tell
 
-
     def read(self, amt=None):
         buff = self.fp.read(amt)
-        self.out.write(buff)
+        self.recorder.write_response_buff(buff)
         return buff
 
     def readline(self, maxlen=None):
-        buff = self.fp.readline(maxlen)
-        if not buff.startswith('HTTP'):
-            buff = self.recorder.filter_header_line(buff)
-
-        self.out.write(buff)
-        return buff
+        line = self.fp.readline(maxlen)
+        #if not buff.startswith('HTTP'):
+        #    buff = self.recorder.filter_header_line(buff)
+        #self.out.write(buff)
+        self.recorder.write_response_line(line)
+        return line
 
     def close(self):
         res = self.fp.close()
-        self.recorder.write_response(self.out)
+        self.recorder.finish_response()
         return res
 
 
@@ -62,18 +64,17 @@ class RecordingHTTPConnection(httplib.HTTPConnection):
 
     def send(self, data):
         if self.recorder:
-            self.req_buff.write(data)
+            self.recorder.write_request(data)
 
-        return orig_connection.send(self, data)
+        res = orig_connection.send(self, data)
+        return res
+
 
     def request(self, *args, **kwargs):
-        if self.recorder:
-            self.req_buff = self.recorder.create_buffer()
-
         res = orig_connection.request(self, *args, **kwargs)
 
         if self.recorder:
-            self.recorder.write_request(self.req_buff)
+            self.recorder.finish_request(self.sock)
 
         return res
 
@@ -87,19 +88,27 @@ class Recorder(object):
     def __init__(self, url):
         self.url = url
 
-    def create_buffer(self):
-        return tempfile.SpooledTemporaryFile(max_size=512*1024)
+        self.request = self._create_buffer()
+        self.response = self._create_buffer()
+        self.resp_header_offset = 0
+
+    def _create_buffer(self):
+        return BytesIO()
 
     def write_request(self, buff):
-        buff.seek(0)
-        print(buff.read())
+        self.request.write(buff)
 
-    def write_response(self, buff):
-        buff.seek(0)
-        print(buff.read())
+    def finish_request(self, socket):
+        print(self.request.getvalue())
 
-    def filter_header_line(self, buff):
-        return buff
+    def write_response_line(self, line):
+        self.response.write(line)
+
+    def write_response_buff(self, buff):
+        self.response.write(buff)
+
+    def finish_response(self):
+        print(self.response.getvalue())
 
 
 # ============================================================================
@@ -117,8 +126,8 @@ def record_requests(url, recorder_cls=Recorder):
 import requests as patched_requests
 
 
-def request(url, method='GET', session=patched_requests, **kwargs):
-    with record_requests(url):
+def request(url, method='GET', recorder_cls=Recorder, session=patched_requests, **kwargs):
+    with record_requests(url, recorder_cls):
         r = session.request(method=method,
                                      url=url,
                                      allow_redirects=False, **kwargs)
