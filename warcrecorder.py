@@ -17,9 +17,12 @@ class WARCRecorder(object):
          'metadata': 'application/warc-fields',
         }
 
-    def __init__(self, url):
-        self.url = url
+    def __init__(self, warcfile, gzip=True):
+        self.warcfile = warcfile
+        self.gzip = gzip
+
         self.target_ip = None
+        self.url = None
 
         self.req_buff = self._create_buffer()
         self.req_block_digest = self._create_digester()
@@ -28,13 +31,24 @@ class WARCRecorder(object):
         self.resp_block_digest = self._create_digester()
         self.resp_payload_digest = self._create_digester()
 
+    def has_url(self):
+        return self.url is not None
+
     def _create_digester(self):
         return Digester('sha1')
 
     def _create_buffer(self):
         return tempfile.SpooledTemporaryFile(max_size=512*1024)
 
-    def write_request(self, buff):
+    def start_request(self):
+        pass
+
+    def start_response(self):
+        pass
+
+    def write_request(self, url, buff):
+        if not self.url:
+            self.url = url
         self.req_block_digest.update(buff)
         self.req_buff.write(buff)
 
@@ -54,28 +68,31 @@ class WARCRecorder(object):
         self.resp_buff.write(buff)
 
     def finish_response(self):
-        orig_out = self._create_buffer()
-        #orig_out = open('/tmp/test2.warc.gz', 'w')
+        #orig_out = self._create_buffer()
+        print('Writing {0} to {1} '.format(self.url, self.warcfile))
+        with open(self.warcfile, 'ab') as orig_out:
+            resp_id = self._make_warc_id()
+            out = orig_out
 
-        resp_id = self._make_warc_id()
-        out = orig_out
+            if self.gzip:
+                out = GzippingWriter(orig_out)
+            self._write_warc_record(out, self.url, 'response', self.resp_buff,
+                                    warc_id=resp_id,
+                                    ip=self.target_ip,
+                                    payload_digest=self.resp_payload_digest,
+                                    block_digest=self.resp_block_digest)
 
-        out = GzippingWriter(orig_out)
-        self._write_warc_record(out, self.url, 'response', self.resp_buff,
-                                warc_id=resp_id,
-                                ip=self.target_ip,
-                                payload_digest=self.resp_payload_digest,
-                                block_digest=self.resp_block_digest)
+            if self.gzip:
+                out = GzippingWriter(orig_out)
+            self._write_warc_record(out, self.url, 'request', self.req_buff,
+                                    concur_to = resp_id,
+                                    block_digest=self.req_block_digest)
 
-        out = GzippingWriter(orig_out)
-        self._write_warc_record(out, self.url, 'request', self.req_buff,
-                                concur_to = resp_id,
-                                block_digest=self.req_block_digest)
+            orig_out.flush()
 
-        orig_out.flush()
         #orig_out.close()
-        orig_out.seek(0)
-        sys.stdout.write(orig_out.read())
+        #orig_out.seek(0)
+        #sys.stdout.write(orig_out.read())
 
     def _header(self, out, name, value):
         self._line(out, name + ': ' + str(value))
@@ -151,8 +168,8 @@ class GzippingWriter(object):
         self.out = out
 
     def write(self, buff):
-        if isinstance(buff, str):
-            buff = buff.encode('utf-8')
+        #if isinstance(buff, str):
+        #    buff = buff.encode('utf-8')
         buff = self.compressor.compress(buff)
         self.out.write(buff)
 
