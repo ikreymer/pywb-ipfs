@@ -5,10 +5,11 @@ import hashlib
 import datetime
 import zlib
 import sys
+import os
 
 
 # ============================================================================
-class WARCRecorder(object):
+class BaseWARCRecorder(object):
 
     WARC_RECORDS = {'warcinfo': 'application/warc-fields',
          'response': 'application/http; msgtype=response',
@@ -17,12 +18,12 @@ class WARCRecorder(object):
          'metadata': 'application/warc-fields',
         }
 
-    def __init__(self, warcfile, gzip=True):
-        self.warcfile = warcfile
-        self.gzip = gzip
+    def __init__(self, gzip=True):
+        self.gzip = True
 
         self.target_ip = None
         self.url = None
+        self.finished = False
 
         self.req_buff = self._create_buffer()
         self.req_block_digest = self._create_digester()
@@ -49,6 +50,7 @@ class WARCRecorder(object):
     def write_request(self, url, buff):
         if not self.url:
             self.url = url
+        print(self.url)
         self.req_block_digest.update(buff)
         self.req_buff.write(buff)
 
@@ -68,31 +70,30 @@ class WARCRecorder(object):
         self.resp_buff.write(buff)
 
     def finish_response(self):
-        #orig_out = self._create_buffer()
-        print('Writing {0} to {1} '.format(self.url, self.warcfile))
-        with open(self.warcfile, 'ab') as orig_out:
-            resp_id = self._make_warc_id()
-            out = orig_out
+        if self.finished:
+            return
 
-            if self.gzip:
-                out = GzippingWriter(orig_out)
-            self._write_warc_record(out, self.url, 'response', self.resp_buff,
-                                    warc_id=resp_id,
-                                    ip=self.target_ip,
-                                    payload_digest=self.resp_payload_digest,
-                                    block_digest=self.resp_block_digest)
+        try:
+            self.write_records()
 
-            if self.gzip:
-                out = GzippingWriter(orig_out)
-            self._write_warc_record(out, self.url, 'request', self.req_buff,
-                                    concur_to = resp_id,
-                                    block_digest=self.req_block_digest)
+        finally:
+            self.finished = True
+            self.resp_buff.close()
+            self.req_buff.close()
 
-            orig_out.flush()
+    def _write_warc_response(self, out, concur_id=None, warc_id=None):
+        self._write_warc_record(out, self.url, 'response', self.resp_buff,
+                                concur_id=concur_id,
+                                warc_id=warc_id,
+                                ip=self.target_ip,
+                                payload_digest=self.resp_payload_digest,
+                                block_digest=self.resp_block_digest)
 
-        #orig_out.close()
-        #orig_out.seek(0)
-        #sys.stdout.write(orig_out.read())
+    def _write_warc_request(self, out, concur_id=None, warc_id=None):
+        self._write_warc_record(out, self.url, 'request', self.req_buff,
+                                concur_id=concur_id,
+                                warc_id=warc_id,
+                                block_digest=self.req_block_digest)
 
     def _header(self, out, name, value):
         self._line(out, name + ': ' + str(value))
@@ -101,10 +102,13 @@ class WARCRecorder(object):
         out.write(line + '\r\n')
 
     def _write_warc_record(self, out, uri, record_type, buff,
-                           date=None, warc_id=None, ip=None, concur_to=None,
+                           date=None, warc_id=None, ip=None, concur_id=None,
                            content_type=None,
                            payload_digest=None,
                            block_digest=None):
+
+        if self.gzip:
+            out = GzippingWriter(out)
 
         self._line(out, 'WARC/1.0')
 
@@ -124,8 +128,8 @@ class WARCRecorder(object):
         if ip:
             self._header(out, 'WARC-IP-Address', ip)
 
-        if concur_to:
-            self._header(out, 'WARC-Concurrent-To', concur_to)
+        if concur_id:
+            self._header(out, 'WARC-Concurrent-To', concur_id)
 
         if block_digest:
             self._header(out, 'WARC-Block-Digest', block_digest)
@@ -153,8 +157,10 @@ class WARCRecorder(object):
         out.flush()
 
     @staticmethod
-    def _make_warc_id():
-        return "<urn:uuid:%s>" % uuid.uuid1()
+    def _make_warc_id(id_=None):
+        if not id_:
+            id_ = uuid.uuid1()
+        return '<urn:uuid:{0}>'.format(id_)
 
     @staticmethod
     def _make_date():
@@ -190,3 +196,43 @@ class Digester(object):
 
     def __str__(self):
         return self.type_ + ':' + str(base64.b32encode(self.digester.digest()))
+
+
+# ============================================================================
+class SingleFileWARCRecorder(BaseWARCRecorder):
+    def __init__(self, warcfilename):
+        super(SingleFileWARCRecorder, self).__init__()
+        self.warcfilename = warcfilename
+
+    def write_records(self):
+        print('Writing {0} to {1} '.format(self.url, self.warcfile))
+        with open(self.warcfilename, 'ab') as out:
+            resp_id = self._make_warc_id()
+            self._write_warc_response(out, warc_id=resp_id)
+            self._write_warc_request(out, concur_id=resp_id)
+
+            orig_out.flush()
+
+
+# ============================================================================
+class PerRecordWARCRecorder(BaseWARCRecorder):
+    def __init__(self, warcdir):
+        super(PerRecordWARCRecorder, self).__init__()
+        self.warcdir = warcdir
+        try:
+            os.makedirs(warcdir)
+        except:
+            pass
+
+    def write_records(self):
+        resp_uuid = str(uuid.uuid1())
+        resp_id = self._make_warc_id(resp_uuid)
+
+        req_uuid = str(uuid.uuid1())
+        req_id = self._make_warc_id(req_uuid)
+
+        with open(os.path.join(self.warcdir, resp_uuid + '.warc.gz'), 'w') as out:
+            self._write_warc_response(out, warc_id=resp_id)
+
+        with open(os.path.join(self.warcdir, req_uuid + '.warc.gz'), 'w') as out:
+            self._write_warc_request(out, warc_id=req_id, concur_id=resp_id)

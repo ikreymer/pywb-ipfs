@@ -1,0 +1,22 @@
+
+ipfs_host: localhost
+ipfs_port: 5001
+redis_url: 'redis://localhost/0'
+
+framed_replay: false
+
+collections:
+    'record':
+        index_paths: $liveweb
+
+        live_rewriter_cls: !!python/name:ipfs.ipfshandlers.IPFSRecorder
+
+        proxyhostport: '*local*'
+
+    'replay':
+        index_paths: 'redis://localhost/0/ipfs:cdxj'
+
+        archive_paths: ''
+
+    'live':
+        index_paths: $liveweb

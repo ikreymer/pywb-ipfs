@@ -38,7 +38,12 @@ class RecordingStream(object):
         return line
 
     def close(self):
-        self.recorder.finish_response()
+        try:
+            self.recorder.finish_response()
+        except Exception as e:
+            import traceback
+            traceback.print_exc(e)
+
         res = self.fp.close()
         return res
 
@@ -186,9 +191,9 @@ class DefaultRecorderMaker(object):
 @contextmanager
 def record_requests(url, recorder_maker):
     if not recorder_maker:
-        recorder_maker = DefaultRecorderMaker
+        recorder_maker = DefaultRecorderMaker()
 
-    RecordingHTTPConnection.global_recorder_maker = recorder_maker()
+    RecordingHTTPConnection.global_recorder_maker = recorder_maker
     yield
     RecordingHTTPConnection.global_recorder_maker = None
 
@@ -205,4 +210,7 @@ def request(url, method='GET', recorder=None, session=patched_requests, **kwargs
 
     return r
 
+
+def clearnow():
+    RecordingHTTPConnection.global_recorder_maker = None
 
