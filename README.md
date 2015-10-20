@@ -19,7 +19,10 @@ Uses new (experimental) live rec system for writing WARCs
 5. `http://localhost:9080/replay/example.com/` to replay the recording. If all goes well, the replay will be
 served from a WARC record stored in IPFS.
 
-
 WARC records are recorded to a local dir, then uploaded to IPFS and removed.
+
+The index of all WARC records written to IPFS is available (as a text file) under the redis key `ipfs:cdxj`
+and also available as the current IPNS registered name, so `ipfs name resolve` will return the hash of the current
+index. The index is put into IPFS every 30 seconds, though a real time index is updated in Redis first (and hence the need for redis).
 
 Redis is used for CDXJ (indexing) for recording and replay, but a copy is also written to IPFS.
