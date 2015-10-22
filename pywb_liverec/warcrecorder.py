@@ -60,7 +60,6 @@ class BaseWARCRecorder(object):
             self.target_ip = ip[0]
 
     def write_response_line(self, buff):
-        #self.resp_header_offset += len(line)
         self.resp_block_digest.update(buff)
         self.resp_buff.write(buff)
 
@@ -69,11 +68,16 @@ class BaseWARCRecorder(object):
         self.resp_payload_digest.update(buff)
         self.resp_buff.write(buff)
 
-    def finish_response(self):
+    def finish_response(self, incomplete=False):
         if self.finished:
             return
 
         try:
+            # Don't write incomplete responses
+            if incomplete:
+                print('Skipping incomplete record for: ' + self.url)
+                return
+
             self.write_records()
 
         finally:
@@ -205,7 +209,7 @@ class SingleFileWARCRecorder(BaseWARCRecorder):
         self.warcfilename = warcfilename
 
     def write_records(self):
-        print('Writing {0} to {1} '.format(self.url, self.warcfile))
+        print('Writing {0} to {1} '.format(self.url, self.warcfilename))
         with open(self.warcfilename, 'ab') as out:
             resp_id = self._make_warc_id()
             self._write_warc_response(out, warc_id=resp_id)

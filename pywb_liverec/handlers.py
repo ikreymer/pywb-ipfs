@@ -2,11 +2,9 @@ from __future__ import absolute_import
 
 from pywb.rewrite.rewrite_live import LiveRewriter
 
-from pywb_liverec.liverec import request, record_requests
+from pywb_liverec.liverec import request, ReadFullyStream
 
-from pywb_liverec.warcrecorder import PerRecordWARCRecorder
-
-from time import sleep
+from pywb_liverec.warcrecorder import SingleFileWARCRecorder
 
 
 #=================================================================
@@ -32,24 +30,3 @@ class LiveRecordRewriter(LiveRewriter):
         status_headers, stream = super(LiveRecordRewriter, self).fetch_http(*args, **kwargs)
         stream = ReadFullyStream(stream)
         return status_headers, stream
-
-
-#=================================================================
-class ReadFullyStream(object):
-    def __init__(self, stream):
-        self.stream = stream
-
-    def read(self, length=None):
-        return self.stream.read(length)
-
-    def readline(self, length=None):
-        return self.stream.readline(length)
-
-    def close(self):
-        while True:
-            buff = self.stream.read(16384)
-            sleep(0)
-            if not buff:
-                break
-
-        self.stream.close()

@@ -13,13 +13,18 @@ from contextlib import contextmanager
 import ssl
 from array import array
 
+from time import sleep
+
+
+BUFF_SIZE = 8192
+
 
 # ============================================================================
 class RecordingStream(object):
     def __init__(self, fp, recorder):
         self.fp = fp
         self.recorder = recorder
-        #self.recorder.start_response()
+        self.incomplete = False
 
         if hasattr(self.fp, 'unread'):
             self.unread = self.fp.unread
@@ -39,7 +44,7 @@ class RecordingStream(object):
 
     def close(self):
         try:
-            self.recorder.finish_response()
+            self.recorder.finish_response(self.incomplete)
         except Exception as e:
             import traceback
             traceback.print_exc(e)
@@ -53,6 +58,9 @@ class RecordingHTTPResponse(httplib.HTTPResponse):
     def __init__(self, recorder, *args, **kwargs):
         httplib.HTTPResponse.__init__(self, *args, **kwargs)
         self.fp = RecordingStream(self.fp, recorder)
+
+    def mark_incomplete(self):
+        self.fp.incomplete = True
 
 
 # ============================================================================
@@ -79,7 +87,7 @@ class RecordingHTTPConnection(httplib.HTTPConnection):
         if hasattr(data,'read') and not isinstance(data, array):
             url = None
             while True:
-                buff = data.read(16384)
+                buff = data.read(self.BUFF_SIZE)
                 if not buff:
                     break
 
@@ -124,14 +132,10 @@ class RecordingHTTPConnection(httplib.HTTPConnection):
 
         return res
 
-    #def getresponse(self, *args, **kwargs):
-    #    res = orig_connection.getresponse(self, *args, **kwargs)
-    #    return res
-
 
 # ============================================================================
-class Recorder(object):
-    def __init__(self, url):
+class EchoRecorder(object):
+    def __init__(self):
         self.counters = dict(write_req=0, write_resp=0)
         self.request = self._create_buffer()
         self.response = self._create_buffer()
@@ -144,13 +148,8 @@ class Recorder(object):
         return BytesIO()
 
     def write_request(self, url, buff):
-        #self.url = urls.pop(self)
-        print(self.url)
-        print(url)
-        print(urls)
-
-        #assert(url == self.url)
-        #print(buff)
+        if not self.url:
+            self.url = url
         self.request.write(buff)
 
     def write_response_line(self, line):
@@ -160,22 +159,55 @@ class Recorder(object):
         pass
 
     def finish_request(self, socket):
-        #print(self.request.getvalue())
-        #print(self.request.getvalue())
         self.counters['write_req'] += 1
-        print(self.counters)
+        print('request', self.url)
+        print(self.request.getvalue())
 
-        #self.response.write('<BODY {0}>'.format(len(buff)))
-        #self.response.write(buff)
-        pass
-
-    def finish_response(self):
-        #print('RESPONSE')
-        #print(self.response.getvalue())
+    def finish_response(self, incomplete=False):
         self.counters['write_resp'] += 1
-
-        #print(self.response.getvalue())
+        print('response', self.url)
+        print(self.response.getvalue())
         print(self.counters)
+
+
+#=================================================================
+class ReadFullyStream(object):
+    def __init__(self, stream):
+        self.stream = stream
+
+    def read(self, length=None):
+        try:
+            return self.stream.read(length)
+        except:
+            self.mark_incomplete()
+            raise
+
+    def readline(self, length=None):
+        try:
+            return self.stream.readline(length)
+        except:
+            self.mark_incomplete()
+            raise
+
+    def mark_incomplete(self):
+        if (hasattr(self.stream, '_fp') and
+            hasattr(self.stream._fp, 'mark_incomplete')):
+            self.stream._fp.mark_incomplete()
+
+    def close(self):
+        try:
+            while True:
+                buff = self.stream.read(BUFF_SIZE)
+                sleep(0)
+                if not buff:
+                    break
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc(e)
+            self.mark_incomplete()
+        finally:
+            self.stream.close()
 
 
 # ============================================================================
@@ -185,7 +217,7 @@ httplib.HTTPConnection = RecordingHTTPConnection
 
 class DefaultRecorderMaker(object):
     def __call__(self):
-        return Recorder()
+        return EchoRecorder()
 
 
 @contextmanager
