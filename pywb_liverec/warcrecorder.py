@@ -7,6 +7,11 @@ import zlib
 import sys
 import os
 
+from collections import OrderedDict
+
+from pywb.utils.loaders import LimitReader
+from pywb.utils.bufferedreaders import BufferedReader
+
 
 # ============================================================================
 class BaseWARCRecorder(object):
@@ -18,8 +23,12 @@ class BaseWARCRecorder(object):
          'metadata': 'application/warc-fields',
         }
 
-    def __init__(self, gzip=True):
+    REVISIT_PROFILE = 'http://netpreserve.org/warc/1.0/revisit/uri-agnostic-identical-payload-digest'
+
+    def __init__(self, gzip=True, dedup=None):
         self.gzip = True
+
+        self.dedup = dedup
 
         self.target_ip = None
         self.url = None
@@ -31,6 +40,8 @@ class BaseWARCRecorder(object):
         self.resp_buff = self._create_buffer()
         self.resp_block_digest = self._create_digester()
         self.resp_payload_digest = self._create_digester()
+
+        self.payload_offset = 0
 
     def has_url(self):
         return self.url is not None
@@ -50,7 +61,6 @@ class BaseWARCRecorder(object):
     def write_request(self, url, buff):
         if not self.url:
             self.url = url
-        print(self.url)
         self.req_block_digest.update(buff)
         self.req_buff.write(buff)
 
@@ -64,6 +74,9 @@ class BaseWARCRecorder(object):
         self.resp_buff.write(buff)
 
     def write_response_buff(self, buff):
+        if not self.payload_offset:
+            self.payload_offset = self.resp_buff.tell()
+
         self.resp_block_digest.update(buff)
         self.resp_payload_digest.update(buff)
         self.resp_buff.write(buff)
@@ -78,6 +91,7 @@ class BaseWARCRecorder(object):
                 print('Skipping incomplete record for: ' + self.url)
                 return
 
+            self.dt_now = datetime.datetime.utcnow()
             self.write_records()
 
         finally:
@@ -85,72 +99,93 @@ class BaseWARCRecorder(object):
             self.resp_buff.close()
             self.req_buff.close()
 
-    def _write_warc_response(self, out, concur_id=None, warc_id=None):
-        self._write_warc_record(out, self.url, 'response', self.resp_buff,
-                                concur_id=concur_id,
-                                warc_id=warc_id,
-                                ip=self.target_ip,
-                                payload_digest=self.resp_payload_digest,
-                                block_digest=self.resp_block_digest)
+    def _write_warc_response(self, out, dt=None, concur_id=None, warc_id=None):
+        dt = dt or self.dt_now
+        if self.dedup:
+            try:
+                result = self.dedup.lookup(self.resp_payload_digest,
+                                           self.url, dt)
+            except Exception as e:
+                import traceback
+                traceback.print_exc(e)
+                result = None
 
-    def _write_warc_request(self, out, concur_id=None, warc_id=None):
-        self._write_warc_record(out, self.url, 'request', self.req_buff,
-                                concur_id=concur_id,
-                                warc_id=warc_id,
-                                block_digest=self.req_block_digest)
+            if result == 'skip':
+                return
 
-    def _header(self, out, name, value):
-        self._line(out, name + ': ' + str(value))
+            if isinstance(result, tuple) and result[0] == 'revisit':
+                return self._write_warc_revisit(out, dt,
+                                                result[1], result[2], warc_id)
 
-    def _line(self, out, line):
-        out.write(line + '\r\n')
+        headers = (
+            ('WARC-Type', 'response'),
+            ('WARC-Record-ID', warc_id or self._make_warc_id()),
+            ('WARC-Date', self._make_date(dt)),
+            ('WARC-Target-URI', self.url),
+            ('WARC-IP-Address', self.target_ip),
+            ('WARC-Concurrent-To', concur_id),
+            ('WARC-Block-Digest', self.resp_block_digest),
+            ('WARC-Payload-Digest', self.resp_payload_digest)
+        )
 
-    def _write_warc_record(self, out, uri, record_type, buff,
-                           date=None, warc_id=None, ip=None, concur_id=None,
-                           content_type=None,
-                           payload_digest=None,
-                           block_digest=None):
+        self._write_warc_record(out, OrderedDict(headers), self.resp_buff)
 
+    def _write_warc_revisit(self, out, dt, orig_url, orig_dt, warc_id=None):
+        dt = dt or self.dt_now
+        headers = (
+            ('WARC-Type', 'revisit'),
+            ('WARC-Record-ID', warc_id or self._make_warc_id()),
+            ('WARC-Date', self._make_date(dt)),
+            ('WARC-Target-URI', self.url),
+            ('WARC-IP-Address', self.target_ip),
+            ('WARC-Profile', self.REVISIT_PROFILE),
+            ('WARC-Refers-To-Target-URI', orig_url),
+            ('WARC-Refers-To-Date', self._make_date(orig_dt)),
+            ('WARC-Payload-Digest', self.resp_payload_digest)
+        )
+
+        self.resp_buff.seek(0)
+
+        header_buff = LimitReader(self.resp_buff, self.payload_offset)
+
+        self._write_warc_record(out, OrderedDict(headers), header_buff,
+                                length=self.payload_offset)
+
+    def _write_warc_request(self, out, dt=None, concur_id=None, warc_id=None):
+        dt = dt or self.dt_now
+        headers = (
+            ('WARC-Type', 'request'),
+            ('WARC-Record-ID', warc_id or self._make_warc_id()),
+            ('WARC-Date', self._make_date(dt)),
+            ('WARC-Target-URI', self.url),
+            ('WARC-Concurrent-To', concur_id),
+            ('WARC-Block-Digest', self.resp_block_digest),
+        )
+
+        self._write_warc_record(out, OrderedDict(headers), self.req_buff)
+
+    def _write_warc_record(self, out, headers, buff, content_type=None, length=None):
         if self.gzip:
             out = GzippingWriter(out)
 
         self._line(out, 'WARC/1.0')
 
-        self._header(out, 'WARC-Type', record_type)
-
-        if not warc_id:
-            warc_id = self._make_warc_id()
-
-        self._header(out, 'WARC-Record-ID', warc_id)
-
-        if not date:
-            date = self._make_date()
-        self._header(out, 'WARC-Date', date)
-
-        self._header(out, 'WARC-Target-URI', uri)
-
-        if ip:
-            self._header(out, 'WARC-IP-Address', ip)
-
-        if concur_id:
-            self._header(out, 'WARC-Concurrent-To', concur_id)
-
-        if block_digest:
-            self._header(out, 'WARC-Block-Digest', block_digest)
-
-        if payload_digest:
-            self._header(out, 'WARC-Payload-Digest', payload_digest)
+        for n, v in headers.iteritems():
+            self._header(out, n, v)
 
         if not content_type:
-            content_type = self.WARC_RECORDS[record_type]
+            content_type = self.WARC_RECORDS[headers['WARC-Type']]
 
         self._header(out, 'Content-Type', content_type)
 
         if buff:
-            self._header(out, 'Content-Length', buff.tell())
+            if not length:
+                length = buff.tell()
+                buff.seek(0)
+
+            self._header(out, 'Content-Length', length)
             # add empty line
             self._line(out, '')
-            buff.seek(0)
             out.write(buff.read())
             # add two lines
             self._line(out, '\r\n')
@@ -160,6 +195,15 @@ class BaseWARCRecorder(object):
 
         out.flush()
 
+    def _header(self, out, name, value):
+        if not value:
+            return
+
+        self._line(out, name + ': ' + str(value))
+
+    def _line(self, out, line):
+        out.write(line + '\r\n')
+
     @staticmethod
     def _make_warc_id(id_=None):
         if not id_:
@@ -167,8 +211,8 @@ class BaseWARCRecorder(object):
         return '<urn:uuid:{0}>'.format(id_)
 
     @staticmethod
-    def _make_date():
-        return datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    def _make_date(dt):
+        return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 # ============================================================================
@@ -198,24 +242,37 @@ class Digester(object):
     def update(self, buff):
         self.digester.update(buff)
 
+    def __eq__(self, string):
+        digest = str(base64.b32encode(self.digester.digest()))
+        if ':' in string:
+            digest = self._type_ + ':' + digest
+        return string == digest
+
     def __str__(self):
         return self.type_ + ':' + str(base64.b32encode(self.digester.digest()))
 
 
 # ============================================================================
 class SingleFileWARCRecorder(BaseWARCRecorder):
-    def __init__(self, warcfilename):
+    def __init__(self, warcfilename, indexer=None):
         super(SingleFileWARCRecorder, self).__init__()
         self.warcfilename = warcfilename
+        self.indexer = indexer
 
     def write_records(self):
         print('Writing {0} to {1} '.format(self.url, self.warcfilename))
-        with open(self.warcfilename, 'ab') as out:
+
+        with open(self.warcfilename, 'a+b') as out:
+            start = out.tell()
             resp_id = self._make_warc_id()
+
             self._write_warc_response(out, warc_id=resp_id)
             self._write_warc_request(out, concur_id=resp_id)
+            out.flush()
 
-            orig_out.flush()
+            out.seek(start)
+            if self.indexer:
+                self.indexer.add_record(out, self.warcfilename)
 
 
 # ============================================================================

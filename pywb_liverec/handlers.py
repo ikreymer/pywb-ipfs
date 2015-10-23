@@ -3,14 +3,18 @@ from __future__ import absolute_import
 from pywb.rewrite.rewrite_live import LiveRewriter
 
 from pywb_liverec.liverec import request, ReadFullyStream
-
 from pywb_liverec.warcrecorder import SingleFileWARCRecorder
+from pywb_liverec.redisindexer import RedisIndexer
+
+from redis import StrictRedis
+
+indexer = RedisIndexer(StrictRedis(), 'warc:cdxj')
 
 
 #=================================================================
 class WARCRecFactory(object):
     def __call__(self):
-        return SingleFileWARCRecorder('./record')
+        return SingleFileWARCRecorder('./record.warc.gz', indexer)
 
 
 #=================================================================

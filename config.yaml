@@ -10,11 +10,13 @@ collections:
         index_paths: $liveweb
 
         live_rewriter_cls: !!python/name:ipfs.ipfshandlers.IPFSRecorder
+        #live_rewriter_cls: !!python/name:pywb_liverec.handlers.LiveRecordRewriter
 
         proxyhostport: '*local*'
 
     'replay':
         index_paths: 'redis://localhost/0/ipfs:cdxj'
+        #index_paths: 'redis://localhost/0/warc:cdxj'
 
         archive_paths: ''
 

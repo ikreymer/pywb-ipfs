@@ -1,14 +1,13 @@
 from pywb_liverec.warcrecorder import BaseWARCRecorder
 from pywb_liverec.handlers import LiveRecordRewriter
+from pywb_liverec.redisindexer import RedisIndexer
 
 import os
 import uuid
 
-from urllib import quote_plus
-
-from pywb.warc.cdxindexer import write_cdx_index
-
 from io import BytesIO
+
+from urllib import quote_plus
 
 from ipfsApi import Client
 from redis import StrictRedis
@@ -74,7 +73,11 @@ class IPFSWARCRecorder(BaseWARCRecorder):
         super(IPFSWARCRecorder, self).__init__()
         self.warcdir = warcdir
         self.ipfs = ipfs
-        self.redis = redis
+        self.redisindex = RedisIndexer(redis, 'ipfs:cdxj')
+
+        # experimental dedup support
+        #self.dedup = self.redisindex
+
         try:
             os.makedirs(warcdir)
         except:
@@ -105,11 +108,7 @@ class IPFSWARCRecorder(BaseWARCRecorder):
 
             else:
                 path = 'ipfs://' + res['Hash']
-                stream.seek(0)
-                cdxout = BytesIO()
-                write_cdx_index(cdxout, stream, path, cdxj=True)
-                if self.redis:
-                    self.redis.zadd('ipfs:cdxj', 0, cdxout.getvalue())
+                self.redisindex.add_record(stream, path)
 
         os.remove(filename)
 
