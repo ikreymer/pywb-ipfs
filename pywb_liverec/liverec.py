@@ -222,27 +222,29 @@ class DefaultRecorderMaker(object):
 
 @contextmanager
 def record_requests(url, recorder_maker):
-    if not recorder_maker:
-        recorder_maker = DefaultRecorderMaker()
-
     RecordingHTTPConnection.global_recorder_maker = recorder_maker
     yield
     RecordingHTTPConnection.global_recorder_maker = None
 
+@contextmanager
+def orig_requests():
+    httplib.HTTPConnection = orig_connection
+    yield
+    httplib.HTTPConnection = RecordingHTTPConnection
+
 
 import requests as patched_requests
 
-def request(url, method='GET', recorder=None, session=patched_requests, **kwargs):
-    with record_requests(url, recorder):
-        kwargs['proxies'] = None
+def request(url, method='GET', recorder_maker=None, session=patched_requests, **kwargs):
+    if kwargs.get('skip_recording'):
+        recorder_maker = None
+    elif not recorder_maker:
+        recorder_maker = DefaultRecorderMaker()
+
+    with record_requests(url, recorder_maker):
         kwargs['allow_redirects'] = False
         r = session.request(method=method,
                             url=url,
                             **kwargs)
 
     return r
-
-
-def clearnow():
-    RecordingHTTPConnection.global_recorder_maker = None
-

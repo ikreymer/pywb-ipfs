@@ -164,6 +164,19 @@ class BaseWARCRecorder(object):
 
         self._write_warc_record(out, OrderedDict(headers), self.req_buff)
 
+    def _write_warc_metadata(self, out, url, content_type, data, dt=None, concur_id=None):
+        dt = dt or datetime.datetime.utcnow()
+        headers = (
+            ('WARC-Type', 'metadata'),
+            ('WARC-Record-ID', self._make_warc_id()),
+            ('WARC-Date', self._make_date(dt)),
+            ('WARC-Target-URI', url),
+            ('WARC-Concurrent-To', concur_id),
+        )
+
+        self._write_warc_record(out, OrderedDict(headers), data,
+                                content_type=content_type)
+
     def _write_warc_record(self, out, headers, buff, content_type=None, length=None):
         if self.gzip:
             out = GzippingWriter(out)
@@ -268,6 +281,16 @@ class SingleFileWARCRecorder(BaseWARCRecorder):
 
             self._write_warc_response(out, warc_id=resp_id)
             self._write_warc_request(out, concur_id=resp_id)
+            out.flush()
+
+            out.seek(start)
+            if self.indexer:
+                self.indexer.add_record(out, self.warcfilename)
+
+    def add_user_record(self, url, content_type, data):
+        with open(self.warcfilename, 'a+b') as out:
+            start = out.tell()
+            self._write_warc_metadata(out, url, content_type, data)
             out.flush()
 
             out.seek(start)
